@@ -21,7 +21,7 @@ class nextbus_query:
     
    def __init__(self, route = '1', stopID = '0074', agency = 'mbta', table = 'Data_Table_1', db = 'nextbus_1_0074'):
         self.route = route #named route
-        self.stopID = stopID #stop ID number from nextbus
+        self.stopID = stopID #stop ID number from nextbus, default is Albany Street Towards Dudley Station
         self.agency = agency #nextbus agency
         self.table = table #SQL table to write too
         self.db = db #SQL database

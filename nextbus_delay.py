@@ -18,11 +18,29 @@ import MySQLdb as mdb
 import matplotlib as plot
 from record_prediction_data import nextbus_query
 import sys
-
-def previous_index(index, ind_array):
-    indlen = len(ind_array)
-    prev_i = pd.Index(range(indlen))[ind_array == index] - 1
-    return ind_array[prev_i][0]
+"""
+helper function to determine whether the time was "pre_rush", "morning_rush", 
+"midday", "evening_rush", "post_rush" or "weekend". demarcations is the time 
+that divides the time categories (doesn't apply to weekend). 
+"""
+def timeofday(time, demarcations = [7, 9.5, 16.5, 18.5]):
+    demarcations.sort()
+    
+    if time.weekday() == 0:
+        return 'weekend'
+    else:
+        timehour = time.hour + time.minute/60.0
+        if timehour <= demarcations[0]:
+            return 'pre_rush'
+        if (timehour >= demarcations[0]) and (timehour <= demarcations[1]):
+            return 'morning_rush'
+        if (timehour >= demarcations[1]) and (timehour <= demarcations[2]):
+            return 'midday'
+        if (timehour >= demarcations[2]) and (timehour <= demarcations[3]):
+            return 'evening_rush'
+        if timehour >= demarcations[3]:
+            return 'post_rush'
+        
     
 class nextbus_delay:
     
@@ -120,13 +138,17 @@ class nextbus_delay:
         final_delays_df = final_delays_df.loc[:,['Query_Time', 'Initial_Prediction', 'Cumulative_Delay','Vehicle_ID']]
         final_delays_df.rename(columns = {'Cumulative_Delay':'Final_Delay'}, inplace = True)
         final_delays_df = final_delays_df[final_delays_df['Final_Delay'] != 0]
+        final_delays_df.loc[:,'Time_Of_Day'] = pd.Series(final_delays_df['Initial_Prediction'].apply(timeofday), index = final_delays_df.index, dtype = 'category')
         self.final_delays_df = final_delays_df
+        
+    def plot_delays(self):
+        self.final_delays_df['Final_Delay'].hist(by=self.final_delays_df['Time_Of_Day'], figsize = (9, 6), sharex = True);
         
         
 nbd = nextbus_delay()
 nbd.read_query_table()
 nbd.calculate_delays()
 nbd.calc_final_delays()
-nbd.final_delays_df.plot(y = 'Final_Delay', kind = 'hist')
-            
+nbd.plot_delays()
+        
             
