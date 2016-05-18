@@ -26,7 +26,7 @@ that divides the time categories (doesn't apply to weekend).
 def timeofday(time, demarcations = [7, 9.5, 16.5, 18.5]):
     demarcations.sort()
     
-    if time.weekday() == 0:
+    if time.dayofweek in [5,6]:
         return 'weekend'
     else:
         timehour = time.hour + time.minute/60.0

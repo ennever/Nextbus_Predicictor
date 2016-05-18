@@ -7,7 +7,7 @@ Created on Thu Jul 16 10:32:08 2015
 Ping nextbus API every 30s for a particular MBTA bus stop and direction
 """
 
-import requests, time
+import requests, time, os
 import xml.etree.ElementTree as ET
 import MySQLdb as mdb
 import sys
@@ -71,24 +71,43 @@ class nextbus_query:
             else:
                 return 1
             
-   def record_query(self, debug = False):
-        con = self.connect_db()
-        with con:
-            cur = con.cursor(mdb.cursors.DictCursor)
-            cs = ', '
-            column_headers = ' (Stop_ID, Vehicle, Query_Time, Predicted_Time, Query_Day) '
-            for prediction in self.predictions:
-                predictiontime = prediction.get('epochTime')
-                seconds = prediction.get('seconds')
-                vehicle = prediction.get('vehicle')
-                querytime = str(int(predictiontime) - int(seconds)*1000)
-                day = time.strftime('%w', time.localtime(1e-3*int(querytime)))
-                values = "VALUES(" + str(self.stopID) + cs + str(vehicle) + cs + \
-                    str(querytime) + cs + str(predictiontime) + cs + str(day) + ')'
-                if debug:
-                    print values
-                cur.execute("INSERT INTO " + self.table + column_headers + values)
-        
+   def record_query(self, debug = False, logfile = ''):
+        if logfile != '': #write to file rather than to mysql database
+            with open(logfile, 'a') as f:
+                column_headers = ' (Stop_ID, Vehicle, Query_Time, Predicted_Time, Query_Day) '
+                cs = ', '
+                for prediction in self.predictions:
+                    predictiontime = prediction.get('epochTime')
+                    seconds = prediction.get('seconds')
+                    vehicle = prediction.get('vehicle')
+                    querytime = str(int(predictiontime) - int(seconds)*1000)
+                    day = time.strftime('%w', time.localtime(1e-3*int(querytime)))
+                    values = "VALUES(" + str(self.stopID) + cs + str(vehicle) + cs + \
+                        str(querytime) + cs + str(predictiontime) + cs + str(day) + ')'
+                    f.write("INSERT INTO " + self.table + column_headers + values)
+                    f.write('\n')
+                    if debug:
+                        print values
+            
+            
+        else:
+            con = self.connect_db()
+            with con:
+                cur = con.cursor(mdb.cursors.DictCursor)
+                cs = ', '
+                column_headers = ' (Stop_ID, Vehicle, Query_Time, Predicted_Time, Query_Day) '
+                for prediction in self.predictions:
+                    predictiontime = prediction.get('epochTime')
+                    seconds = prediction.get('seconds')
+                    vehicle = prediction.get('vehicle')
+                    querytime = str(int(predictiontime) - int(seconds)*1000)
+                    day = time.strftime('%w', time.localtime(1e-3*int(querytime)))
+                    values = "VALUES(" + str(self.stopID) + cs + str(vehicle) + cs + \
+                        str(querytime) + cs + str(predictiontime) + cs + str(day) + ')'
+                    if debug:
+                        print values
+                    cur.execute("INSERT INTO " + self.table + column_headers + values)
+            
             
    def read_queries(self) :
         con = self.connect_db()
@@ -101,7 +120,7 @@ class nextbus_query:
         #    rows = cur.fetchall()
         return rows
             
-   def start_queries(self, interval = 30, duration = 18): #do a query every "interval" seconds and record it in table
+   def start_queries(self, interval = 30, duration = 18, logfile = ''): #do a query every "interval" seconds and record it in table
        nqueries = (duration * 3600) / interval
        print 'Querying Nextbus Agency: ' + self.agency + ', Route: ' + self.route + ', Stop: ' + self.stopID
        print 'Recording to MySQL DB: ' + self.db + ', Table: ' + self.table
@@ -115,9 +134,9 @@ class nextbus_query:
                time.sleep(interval)
 
            if self.query_nb_api() == 1:
-               self.record_query()
+               self.record_query(logfile = logfile)
         
-               
+             
 #nbq = nextbus_query()
 #nbq.create_table(dropif = True)
 #nbq.do_query()
