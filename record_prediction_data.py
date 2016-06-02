@@ -119,7 +119,18 @@ class nextbus_query:
         #        self.table + " ORDER BY Vehicle")
         #    rows = cur.fetchall()
         return rows
-            
+   def read_query_logfile(self, filename):
+       
+       with open(filename, 'r') as f:
+           con = self.connect_db()
+           with con:
+               column_headers = ' (Stop_ID, Vehicle, Query_Time, Predicted_Time, Query_Day) '
+               cur = con.cursor(mdb.cursors.DictCursor)
+               for line in f:
+                   values = line.rstrip('\n')
+                   cur.execute("INSERT INTO " + self.table + column_headers + values)
+                
+   
    def start_queries(self, interval = 30, duration = 18, logfile = ''): #do a query every "interval" seconds and record it in table
        nqueries = (duration * 3600) / interval
        print 'Querying Nextbus Agency: ' + self.agency + ', Route: ' + self.route + ', Stop: ' + self.stopID
@@ -137,7 +148,7 @@ class nextbus_query:
                self.record_query(logfile = logfile)
         
              
-#nbq = nextbus_query()
+#anbq = nextbus_query()
 #nbq.create_table(dropif = True)
 #nbq.do_query()
 #nbq.record_query(debug = True)

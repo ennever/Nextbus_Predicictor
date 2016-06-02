@@ -15,14 +15,20 @@ time, these will be separate "trips"
 
 import pandas as pd
 import MySQLdb as mdb
-import matplotlib as plot
+import matplotlib.pyplot as plot
 from record_prediction_data import nextbus_query
 import sys
+import numpy as np
 """
 helper function to determine whether the time was "pre_rush", "morning_rush", 
 "midday", "evening_rush", "post_rush" or "weekend". demarcations is the time 
 that divides the time categories (doesn't apply to weekend). 
 """
+#exception to call when there is a bad fit in the extrapolation
+class BadFitError(Exception):
+    """Raise when the extrapolation fit would give a nonsensical answer"""
+    
+
 def timeofday(time, demarcations = [7, 9.5, 16.5, 18.5]):
     demarcations.sort()
     
@@ -82,7 +88,7 @@ class nextbus_delay:
         self.rows = rows
         return True
     
-    def calculate_delays(self):#calculate the delay
+    def calculate_delays(self, maxdelta = 30.0):#calculate the delay, maxdelta is the maximum delta between predictions that indicates a new trip
         if len(self.rows) == 0:
             self.read_query_table()
         vids = self.rows['Vehicle'].unique() #vehicle IDs
@@ -98,35 +104,53 @@ class nextbus_delay:
             print '',
             i += 1
             vehicle_data = self.rows[self.rows.Vehicle == vid]
-            delta = pd.DataFrame({'Query_Time':vehicle_data.Query_Time, 'Time_Delta':vehicle_data.Predicted_Time})
+            delta = pd.DataFrame({'Query_Time':vehicle_data.Query_Time, 'Time_Delta':vehicle_data.Predicted_Time, 'Predicted_Time':vehicle_data.Predicted_Time})
             delta = delta.sort(columns = 'Query_Time')
-            delta['Time_Delta'] = delta['Time_Delta'].diff() #calculate the difference between sequential predictions
+            delta['Time_Delta'] = delta['Time_Delta'].diff(periods = 1) #calculate the difference between sequential predictions
+            neitherzero = (delta['Predicted_Time'].diff(periods = 1) != pd.Timedelta(0)) | \
+                (delta['Predicted_Time'].diff(periods = -1) != pd.Timedelta(0))
+            delta = delta[neitherzero]
             #delta = delta[delta.Time_Delta != pd.Timedelta(0)] #no reason to keep the zeros
-            delta['Time_Delta'] = delta['Time_Delta'].astype('timedelta64[s]')
+            delta['Time_Delta'] = delta['Time_Delta'].astype('timedelta64[s]')/60.0
             #get the indexes of where the time delta is greater than 30 minutes
-            tripbegins = delta.index[abs(delta['Time_Delta']) > 1800]
+            tripbegins = delta.index[abs(delta['Time_Delta']) > maxdelta]
             #now have the indexes of where a particular bus arrives
             #now it's possible to get the index of where a trip begins and when it ends
             #therefore we can get a measure of the cumulative delay
             tripbegin = delta.index[0]
-            initial_prediction = vehicle_data['Predicted_Time'].loc[tripbegin]
-          
+            initial_prediction = delta['Predicted_Time'].loc[tripbegin]
+            vehicle_departure = None
             for delta_index, delta_row in delta.iterrows():
                 if (delta_index == tripbegins).any(): #if you're at an initial 
+                    vehicle_departure = None
                     cumulative_delay = pd.Timedelta(0)
                     tripbegin = delta_index
-                    initial_prediction = vehicle_data['Predicted_Time'].loc[tripbegin]
+                    initial_prediction = delta['Predicted_Time'].loc[tripbegin]
                     query_time = delta['Query_Time'].loc[tripbegin]
                 else:
-                    cumulative_delay = vehicle_data['Predicted_Time'].loc[delta_index] - initial_prediction
+                    cumulative_delay = delta['Predicted_Time'].loc[delta_index] - initial_prediction
                     query_time = delta['Query_Time'].loc[delta_index]
-                toarrival = initial_prediction - query_time
-                newrow = {'Vehicle_ID':vid, 'Trip_Index':tripbegin, 'Initial_Prediction':initial_prediction, 'Query_Time':query_time, 'Cumulative_Delay':cumulative_delay, 'Time_To_Initial_Prediction':toarrival}
-                delay_df = delay_df.append(newrow, ignore_index=True)
+                    
+                toarrival = query_time - initial_prediction
                 
-        delay_df['Time_To_Initial_Prediction'] = delay_df['Time_To_Initial_Prediction'].astype('timedelta64[s]')
-        delay_df['Cumulative_Delay'] = delay_df['Cumulative_Delay'].astype('timedelta64[s]')
+                if (vehicle_departure is None):
+                    if (np.abs(cumulative_delay) >= pd.to_timedelta(0.01, unit = 'm')):
+                        vehicle_departure = toarrival.total_seconds()/60.0
+                        #have to populate the part of the dataframe that previously had the 
+                        tofill_index = delay_df.index[delay_df['Trip_Index'] == tripbegin]
+                        newdeparts = np.array([vehicle_departure] * len(tofill_index))
+                        delay_df.loc[tofill_index, 'Departure_Time'] = newdeparts
+                    
+                newrow = {'Vehicle_ID':vid, 'Trip_Index':tripbegin, 'Initial_Prediction':initial_prediction, 'Query_Time':query_time, 'Cumulative_Delay':cumulative_delay, \
+                    'Time_To_Initial_Prediction':toarrival, 'Departure_Time':vehicle_departure}
+                delay_df = delay_df.append(newrow, ignore_index=True)
+            #also need to get a time when the bus actually departs, based on the
+            #first non-zero delay
+            
         
+        delay_df['Time_To_Initial_Prediction'] = delay_df['Time_To_Initial_Prediction'].astype('timedelta64[s]')/60.0
+        delay_df['Cumulative_Delay'] = delay_df['Cumulative_Delay'].astype('timedelta64[s]')/60.0
+        #delay_df['Departure_Time'] = delay_df['Departure_Time'].astype('timedelta64[s]')/60.0
         self.delay_df = delay_df
     
     def calc_final_delays(self):#calculte the final delay for a particular trip
@@ -143,12 +167,55 @@ class nextbus_delay:
         
     def plot_delays(self):
         self.final_delays_df['Final_Delay'].hist(by=self.final_delays_df['Time_Of_Day'], figsize = (9, 6), sharex = True);
+    
+    
+    #extrapolate the current delay into a final prediction of the cumulative delay
+    #based on how long since departure
+    def extrapolate_final_delay(self, x): 
+        t2ip = x['Time_To_Initial_Prediction']
+        tdep = x['Departure_Time']
+        tdelay = x['Cumulative_Delay']
+        if t2ip <= tdep:
+            return 0.0 #if it hasn't left yet, assume no delay
+        else:
+            tx = t2ip - tdep
+            ty = tdelay
+            if ty >= tx:
+                errmsg = 'Bad fit with tx = ' + str(tx) + ', ty = ' + str(ty) \
+                    + ', tdep = ' + str(tdep)
+                raise BadFitError(errmsg)
+            else:
+                return tdep/(1 - tx / ty)
         
+    #calculte the extrapolated delays, accounting for when the fit is bad
+    #output is a dataframe the same index as delay_df, but with the extrapolated delay and if it's a good fit
+    def calc_extrapolated_delays(self, conc = False):
+        extrapolated_df = pd.DataFrame([])
+        columns = ['Extrapolated_Delay', 'Good_Fit']
+        for index, row in self.delay_df.iterrows():
+            try:
+                extrapolated_delay = self.extrapolate_final_delay(row)
+                goodfit = True
+            except BadFitError:
+                extrapolated_delay = row['Cumulative_Delay']
+                goodfit = False
+            except ZeroDivisionError:
+                extrapolated_delay = row['Cumulative_Delay']
+                goodfit = False
+            newrow = pd.DataFrame(data = [[extrapolated_delay, goodfit]], \
+                columns = columns, index = [index])
+            extrapolated_df = extrapolated_df.append(newrow)
+        if conc:   
+            return pd.concat([self.delay_df, extrapolated_df], axis = 1)
+        else:
+            return extrapolated_df
+            
+    #compare the final delays and the extrapolated delays
         
 nbd = nextbus_delay()
 nbd.read_query_table()
-nbd.calculate_delays()
+nbd.calculate_delays(maxdelta=10.0)
 nbd.calc_final_delays()
 nbd.plot_delays()
-        
+extrap = nbd.calc_extrapolated_delays(conc = True)
             
